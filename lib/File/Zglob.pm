@@ -2,15 +2,12 @@ package File::Zglob;
 use strict;
 use warnings FATAL => 'recursion';
 use 5.008008;
-our $VERSION = '0.06';
+our $VERSION = '0.07';
 use base qw(Exporter);
 
 our @EXPORT = qw(zglob);
 
 use File::Basename;
-
-sub subname { $_[1] }
-# use Sub::Name qw(subname);
 
 our $SEPCHAR = $^O eq 'Win32' ? '\\' : '/';
 our $NOCASE = $^O =~ /^(?:MSWin32|VMS|os2|dos|riscos|MacOS|darwin)$/ ? 1 : 0;
@@ -22,8 +19,11 @@ our $STRICT_WILDCARD_SLASH = 1;
 
 sub zglob {
     my ($pattern) = @_;
+    #dbg("FOLDING: $pattern");
     $pattern =~ s!^(\~[^$SEPCHAR]*)![glob($1)]->[0]!e; # support ~tokuhirom/
-    return zglob_fold($pattern, \&cons, []);
+    my ($node, $matcher) = glob_prepare_pattern($pattern);
+    #dbg("pattern: ", $node, $matcher);
+    return _rec($node, $matcher, []);
 }
 
 sub dbg(@) {
@@ -50,59 +50,36 @@ sub dbg(@) {
     print($msg);
 }
 
-sub zglob_fold {
-    my ($patterns, $proc, $seed) = @_;
-    my @ret;
-    for my $pattern (glob_expand_braces($patterns)) {
-        push @ret, @{glob_fold_1($pattern, $proc, $seed)};
+sub _recstar {
+    my ($node, $matcher) = @_;
+    #dbg("recstar: ", $node, $matcher, $seed);
+    return (
+        _rec( $node, $matcher ),
+        (
+            map { _recstar( $_, $matcher ) }
+              glob_fs_fold( $node, qr{^[^.].*$}, 1 )
+        )
+    );
+}
+
+sub _rec {
+    my ($node, $matcher) = @_;
+    my ($current, @rest) = @{$matcher};
+    if (!defined $current) {
+        #dbg("FINISHED");
+        return ();
+    } elsif (ref($current) eq 'SCALAR' && $current == $DEEPFLAG) {
+        #dbg("** mode");
+        return _recstar($node, \@rest);
+    } elsif (@rest == 0) {
+        #dbg("file name");
+        # (folder proc seed node (car matcher) #f)
+        return glob_fs_fold($node, $current, 0);
+    } else {
+        return glob_fs_fold($node, $current, 1, \@rest);
     }
-    return @ret;
 }
 
-sub cons { [$_[0], @{$_[1]}] }
-
-sub glob_fold_1 {
-    my ($pattern, $proc, $seed) = @_;
-    #dbg("FOLDING: $pattern");
-    my ($rec, $recstar);
-    $recstar = subname('recstar', sub {
-        my ($node, $matcher, $seed) = @_;
-        #dbg("recstar: ", $node, $matcher, $seed);
-        my $dat = glob_fs_fold(\&cons, [], $node, qr{^[^.].*$}, 1);
-        my $foo = $rec->($node, $matcher, $seed);
-        #dbg("recstar:: dat: ", $dat, " foo: ", $foo);
-        for my $thing (@$dat) {
-            $foo = $recstar->($thing, $matcher, $foo);
-        }
-        return $foo;
-    });
-    $rec = subname('rec' => sub {
-        my ($node, $matcher, $seed) = @_;
-        #dbg($node, $matcher, $seed);
-        my ($current, @rest) = @{$matcher};
-        if (!defined $current) {
-            #dbg("FINISHED");
-            return $seed;
-        } elsif (ref($current) eq 'SCALAR' && $current == $DEEPFLAG) {
-            #dbg("** mode");
-            return $recstar->($node, \@rest, $seed);
-        } elsif (@rest == 0) {
-            #dbg("file name");
-            # (folder proc seed node (car matcher) #f)
-            return glob_fs_fold($proc, $seed, $node, $current, 0);
-        } else {
-            #dbg "NORMAL MATCH";
-            return glob_fs_fold(sub {
-                # my ($node, $seed) = @_;
-                #dbg("NEXT: ", $node, \@rest);
-                return $rec->($_[0], \@rest, $_[1]);
-            }, $seed, $node, $current, 1);
-        }
-    });
-    my ($node, $matcher) = glob_prepare_pattern($pattern);
-    #dbg("pattern: ", $node, $matcher);
-    return $rec->($node, $matcher, $seed);
-}
 
 # /^home$/ のような固定の文字列の場合に高速化をはかるための最適化予定地なので、とりあえず undef をかえしておいても問題がない
 sub fixed_regexp_p {
@@ -112,7 +89,7 @@ sub fixed_regexp_p {
 
 # returns arrayref of seeds.
 sub glob_fs_fold {
-    my ($proc, $seed, $node, $regexp, $non_leaf_p) = @_;
+    my ($node, $regexp, $non_leaf_p, $rest) = @_;
     my $prefix = do {
         if (ref $node eq 'SCALAR') {
             if ($$node eq 1) { #t
@@ -129,14 +106,19 @@ sub glob_fs_fold {
     #dbg("prefix: $prefix");
     #dbg("regxp: ", $regexp);
     if (ref $regexp eq 'SCALAR' && $regexp == $DIRFLAG) {
-        $proc->($prefix, $seed);
-    } elsif (my $string_portion = fixed_regexp_p($regexp)) { # /^path$/
-        my $full = $prefix . $string_portion;
-        if (-e $full && (!$non_leaf_p || -d $full)) {
-            $proc->($full, $seed);
+        if ($rest) {
+            return _rec($prefix, $rest);
         } else {
-            $proc;
+            return ($prefix);
         }
+#   } elsif (my $string_portion = fixed_regexp_p($regexp)) { # /^path$/
+#       die "TBI";
+#       my $full = $prefix . $string_portion;
+#       if (-e $full && (!$non_leaf_p || -d $full)) {
+#           $proc->($full, $seed);
+#       } else {
+#           $proc;
+#       }
     } else { # normal regexp
         #dbg("normal regexp");
         my $dir = do {
@@ -151,20 +133,25 @@ sub glob_fs_fold {
         #dbg("dir: $dir");
         opendir my $dirh, $dir or do {
             #dbg("cannot open dir: $dir: $!");
-            return $seed;
+            return ();
         };
+        my @ret;
         while (defined(my $child = readdir($dirh))) {
             next if $child eq '.' or $child eq '..';
             my $full;
             #dbg("non-leaf: ", $non_leaf_p);
             if (($child =~ $regexp) && ($full = $prefix . $child) && (!$non_leaf_p || -d $full)) {
                 #dbg("matched: ", $regexp, $child, $full);
-                $seed = $proc->($full, $seed);
-            } else {
+                if ($rest) {
+                    push @ret, _rec($full, $rest);
+                } else {
+                    push @ret, $full;
+                }
+          # } else {
                 #dbg("Don't match: $child");
             }
         }
-        return $seed;
+        return @ret;
     }
 }
 

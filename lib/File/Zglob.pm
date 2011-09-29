@@ -1,15 +1,15 @@
 package File::Zglob;
 use strict;
-use warnings FATAL => 'recursion';
+use warnings 'all', FATAL => 'recursion';
 use 5.008008;
-our $VERSION = '0.07';
+our $VERSION = '0.08';
 use base qw(Exporter);
 
 our @EXPORT = qw(zglob);
 
 use File::Basename;
 
-our $SEPCHAR = $^O eq 'Win32' ? '\\' : '/';
+our $SEPCHAR    = '/';
 our $NOCASE = $^O =~ /^(?:MSWin32|VMS|os2|dos|riscos|MacOS|darwin)$/ ? 1 : 0;
 our $DIRFLAG = \"DIR?";
 our $DEEPFLAG = \"**";
@@ -20,7 +20,13 @@ our $STRICT_WILDCARD_SLASH = 1;
 sub zglob {
     my ($pattern) = @_;
     #dbg("FOLDING: $pattern");
-    $pattern =~ s!^(\~[^$SEPCHAR]*)![glob($1)]->[0]!e; # support ~tokuhirom/
+    # support ~tokuhirom/
+    if ($^O eq 'MSWin32') {
+        require Win32;
+        $pattern =~ s!^(\~[^$SEPCHAR]*)!Win32::GetLongPathName([glob($1)]->[0])!e;
+    } else {
+        $pattern =~ s!^(\~[^$SEPCHAR]*)![glob($1)]->[0]!e;
+    }
     my ($node, $matcher) = glob_prepare_pattern($pattern);
     #dbg("pattern: ", $node, $matcher);
     return _rec($node, $matcher, []);
@@ -99,12 +105,17 @@ sub glob_fs_fold {
             } else {
                 die "FATAL";
             }
-        } else {
+        } elsif ($node !~ m{/$}) {
             $node . '/';
+        } else {
+            $node;
         }
     };
     #dbg("prefix: $prefix");
     #dbg("regxp: ", $regexp);
+    if ($^O eq 'MSWin32' && ref $regexp eq 'SCALAR' && $$regexp =~ /^[a-zA-Z]\:$/) {
+        return _rec($$regexp . '/', $rest);
+    }
     if (ref $regexp eq 'SCALAR' && $regexp == $DIRFLAG) {
         if ($rest) {
             return _rec($prefix, $rest);
@@ -163,32 +174,23 @@ sub glob_prepare_pattern {
     if ($is_absolute) {
         shift @path;
     }
+    if ($^O eq 'MSWin32' && $path[0] =~ /^[a-zA-Z]\:$/) {
+        $is_absolute = 1;
+    }
 
     @path = map {
         if ($_ eq '**') {
             $DEEPFLAG
         } elsif ($_ eq '') {
             $DIRFLAG
+        } elsif ($^O eq 'MSWin32' && $_ =~ '^[a-zA-Z]\:$') {
+            \$_
         } else {
             glob_to_regex($_) # TODO: replace with original implementation?
         }
     } @path;
 
     return ( \$is_absolute, \@path );
-}
-
-# TODO: better error detection?
-# TODO: nest support?
-sub glob_expand_braces {
-    my ($pattern, @more) = @_;
-    if (my ($prefix, $body, $suffix) = ($pattern =~ /^(.*)\{([^}]+)\}(.*)$/)) {
-        return (
-            ( map { glob_expand_braces("$prefix$_$suffix") } split /,/, $body ),
-            @more
-        );
-    } else {
-        return ($pattern, @more);
-    }
 }
 
 sub glob_to_regex {
@@ -334,7 +336,13 @@ C<< **/* >> form makes deep recursion by soft link. zglob throw exception if it'
 
 =head1 PORTABILITY
 
-I don't tested this module on Win32 environment. If you want to write a patch, please send me a github pull-req.
+=over 4
+
+=item Win32
+
+Zglob supports Win32. zglob() only uses '/' as a path separator. Since zglob() accepts non-utf8 strings. CP932 contains '\' character as a second byte of multibyte chars.
+
+=back
 
 =head1 LIMITATIONS
 

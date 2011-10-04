@@ -2,7 +2,7 @@ package File::Zglob;
 use strict;
 use warnings 'all', FATAL => 'recursion';
 use 5.008008;
-our $VERSION = '0.08';
+our $VERSION = '0.09';
 use base qw(Exporter);
 
 our @EXPORT = qw(zglob);
@@ -183,6 +183,8 @@ sub glob_prepare_pattern {
             $DEEPFLAG
         } elsif ($_ eq '') {
             $DIRFLAG
+        } elsif ($_ eq '.') {
+            ()
         } elsif ($^O eq 'MSWin32' && $_ =~ '^[a-zA-Z]\:$') {
             \$_
         } else {

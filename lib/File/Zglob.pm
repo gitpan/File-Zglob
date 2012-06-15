@@ -2,7 +2,7 @@ package File::Zglob;
 use strict;
 use warnings 'all', FATAL => 'recursion';
 use 5.008008;
-our $VERSION = '0.10';
+our $VERSION = '0.11';
 use base qw(Exporter);
 
 our @EXPORT = qw(zglob);
@@ -13,7 +13,7 @@ our $SEPCHAR    = '/';
 our $NOCASE = $^O =~ /^(?:MSWin32|VMS|os2|dos|riscos|MacOS|darwin)$/ ? 1 : 0;
 our $DIRFLAG = \"DIR?";
 our $DEEPFLAG = \"**";
-our $PARENTFLAG = \"**";
+our $PARENTFLAG = \"..";
 our $DEBUG = 0;
 our $STRICT_LEADING_DOT    = 1;
 our $STRICT_WILDCARD_SLASH = 1;

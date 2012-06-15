@@ -2,7 +2,7 @@ package File::Zglob;
 use strict;
 use warnings 'all', FATAL => 'recursion';
 use 5.008008;
-our $VERSION = '0.09';
+our $VERSION = '0.10';
 use base qw(Exporter);
 
 our @EXPORT = qw(zglob);
@@ -13,6 +13,7 @@ our $SEPCHAR    = '/';
 our $NOCASE = $^O =~ /^(?:MSWin32|VMS|os2|dos|riscos|MacOS|darwin)$/ ? 1 : 0;
 our $DIRFLAG = \"DIR?";
 our $DEEPFLAG = \"**";
+our $PARENTFLAG = \"**";
 our $DEBUG = 0;
 our $STRICT_LEADING_DOT    = 1;
 our $STRICT_WILDCARD_SLASH = 1;
@@ -28,6 +29,8 @@ sub zglob {
         $pattern =~ s!^(\~[^$SEPCHAR]*)![glob($1)]->[0]!e;
     }
     my ($node, $matcher) = glob_prepare_pattern($pattern);
+    # $node : \0 if absolute path, \1 if relative.
+
     #dbg("pattern: ", $node, $matcher);
     return _rec($node, $matcher, []);
 }
@@ -45,6 +48,7 @@ sub dbg(@) {
         if (not defined $_) {
             $msg .= '<<undef>>';
         } elsif (ref $_) {
+            require Data::Dumper;
             local $Data::Dumper::Terse = 1;
             local $Data::Dumper::Indent = 0;
             $msg .= Data::Dumper::Dumper($_);
@@ -70,6 +74,8 @@ sub _recstar {
 
 sub _rec {
     my ($node, $matcher) = @_;
+    # $matcher: ArrayRef[Any]
+
     my ($current, @rest) = @{$matcher};
     if (!defined $current) {
         #dbg("FINISHED");
@@ -77,6 +83,14 @@ sub _rec {
     } elsif (ref($current) eq 'SCALAR' && $current == $DEEPFLAG) {
         #dbg("** mode");
         return _recstar($node, \@rest);
+    } elsif (ref($current) eq 'SCALAR' && $current == $PARENTFLAG) {
+        if (ref($node) eq 'SCALAR' && $$node eq 1) { #t
+            die "You cannot get a parent directory of root dir.";
+        } elsif (ref($node) eq 'SCALAR' && $$node eq 0) { #f
+            return _rec("..", \@rest);
+        } else {
+            return _rec("$node$SEPCHAR..", \@rest);
+        }
     } elsif (@rest == 0) {
         #dbg("file name");
         # (folder proc seed node (car matcher) #f)
@@ -96,6 +110,7 @@ sub fixed_regexp_p {
 # returns arrayref of seeds.
 sub glob_fs_fold {
     my ($node, $regexp, $non_leaf_p, $rest) = @_;
+
     my $prefix = do {
         if (ref $node eq 'SCALAR') {
             if ($$node eq 1) { #t
@@ -111,8 +126,8 @@ sub glob_fs_fold {
             $node;
         }
     };
-    #dbg("prefix: $prefix");
-    #dbg("regxp: ", $regexp);
+    dbg("prefix: $prefix");
+    dbg("regxp: ", $regexp);
     if ($^O eq 'MSWin32' && ref $regexp eq 'SCALAR' && $$regexp =~ /^[a-zA-Z]\:$/) {
         return _rec($$regexp . '/', $rest);
     }
@@ -185,6 +200,8 @@ sub glob_prepare_pattern {
             $DIRFLAG
         } elsif ($_ eq '.') {
             ()
+        } elsif ($_ eq '..') {
+            $PARENTFLAG
         } elsif ($^O eq 'MSWin32' && $_ =~ '^[a-zA-Z]\:$') {
             \$_
         } else {
@@ -195,6 +212,7 @@ sub glob_prepare_pattern {
     return ( \$is_absolute, \@path );
 }
 
+# this is not a private function. '**' was handled at glob_prepare_pattern() function.
 sub glob_to_regex {
     my $glob = shift;
     my $regex = glob_to_regex_string($glob);
@@ -290,7 +308,7 @@ File::Zglob provides extended glob. It supports C<< **/*.pm >> form.
 
     my @files = zglob('**/*.[ch]');
 
-Unlike shell’s glob, if there’s no matching pathnames, () is returned.
+Unlike shell's glob, if there's no matching pathnames, () is returned.
 
 =back
 
@@ -302,7 +320,7 @@ A glob pattern also consists of components and separator characters. In a compon
 
 =item C<< * >>
 
-When it appears at the beginning of a component, it matches zero or more characters except a period (.). And it won’t match if the component of the input string begins with a period.
+When it appears at the beginning of a component, it matches zero or more characters except a period (.). And it won't match if the component of the input string begins with a period.
 
 Otherwise, it matches zero or more sequence of any characters.
 
@@ -322,7 +340,7 @@ When it appears at the beginning of a component, it matches a character except a
 
 =item C<< [chars] >>
 
-Specifies a character set. Matches any one of the set. The syntax of chars is the same as perl’s character set syntax. 
+Specifies a character set. Matches any one of the set. The syntax of chars is the same as perl's character set syntax. 
 
 =item C<< {pm,pl} >>
 
